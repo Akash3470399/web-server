@@ -15,5 +15,6 @@ struct RouteHandler
 };
 
 RetState register_route_handlers(RouteHandler *rhs, int nrh);
+void destroy_routes();
 
 #endif

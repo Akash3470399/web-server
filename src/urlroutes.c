@@ -56,3 +56,9 @@ RequestHandler get_route_handler(char *url, Method method)
     }
     return NULL;
 }
+
+void destroy_routes()
+{
+    if(url_routes)
+        free(url_routes);
+}
