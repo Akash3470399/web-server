@@ -27,6 +27,6 @@
 
     uint buffer_datasize(Buffer *buf);
 
-
+    void buffer_reset(Buffer *buf);
 
 #endif

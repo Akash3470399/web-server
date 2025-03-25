@@ -139,3 +139,14 @@ uint buffer_datasize(Buffer *buf)
         return buf->datasize;
     return 0;
 }
+
+void buffer_reset(Buffer *buf)
+{
+    if(buf)
+    {
+        for(int i = 0; i < buf->bufsize; i++)
+            buf->data[i] = 0;
+        buf->datasize = 0;
+        buf->read_pos = 0;
+    }
+}
