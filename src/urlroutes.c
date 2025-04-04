@@ -11,9 +11,21 @@ static RouteHandler *url_routes = NULL;
 
 
 Response *err_get_handler(Request *req){
-    Response *r = resp_create(req);
-    resp_set_status_code(r, BAD_REQUEST_SC);
-    return r;
+    char response[] = "<html><body><h1>Opps! Something went wrong.</h1></body></html>";
+    char response_len[10];
+    Response *resp = resp_create(req);
+    Buffer *body_buf = buffer_new(128);
+
+    sprintf(response_len, "%d", strlen(response));
+    resp_set_status_code(resp, BAD_REQUEST_SC);
+    resp_add_header(resp, "Content-Type", "text/html");
+    resp_add_header(resp, "Content-Length", response_len);
+    resp_add_header(resp, "Connection", "close");
+    
+    buffer_append(body_buf, response, strlen(response));
+    resp_set_body(resp, body_buf);
+
+    return resp;
 }
 
 static RouteHandler err_route_handler = {

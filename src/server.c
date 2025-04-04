@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <errno.h>
 
 #include "server.h"
 #include "buffer.h"
@@ -13,9 +14,9 @@
 
 #define CONN_BACKLOG 20
 #define SERVER_CTAB_IDX 0
-#define INIT_CTAB_LEN 1
+#define CTAB_LEN 10
 #define POLL_TIMEOUT 0
-#define BUFLEN 1024
+#define BUFLEN (1 << 16)
 
 struct Connection
 {
@@ -26,7 +27,7 @@ struct Connection
 struct Server
 {
     struct pollfd server_pfd;
-    struct pollfd ctab[INIT_CTAB_LEN];
+    struct pollfd ctab[CTAB_LEN];
     Buffer **inbufs, **outbufs;
     int ctlen;
 };
@@ -37,7 +38,7 @@ RetState accept_connection(Server *s)
     struct pollfd client = {0, POLLIN | POLLOUT, 0};
 
     if( 
-        (s->ctlen == INIT_CTAB_LEN) ||
+        (s->ctlen >= CTAB_LEN) ||
         ((client.fd = accept(server_sock, NULL, NULL)) < 0)
     )
         return ERR_S;
@@ -51,21 +52,45 @@ RetState accept_connection(Server *s)
         return ERR_S;
     }
     s->ctlen += 1;
+    s->ctab[SERVER_CTAB_IDX].revents = 0;
+    printf("Connection accepted at %d\n", client.fd);
     return OK_S;
+}
+
+void close_connection(Server *s, int ctidx)
+{
+    close(s->ctab[ctidx].fd);
+    s->ctab[ctidx].fd = -1;
+    s->ctab[ctidx].events = 0;
+    s->ctab[ctidx].revents = 0;
+    
+    buffer_reset(s->inbufs[ctidx]);
+    
+    // swap closed connection with last one to keep ctab continuous
+    if((s->ctlen > 2) && (ctidx != s->ctlen -1))
+        s->ctab[ctidx] = s->ctab[s->ctlen-1];
+    s->ctlen -= 1;
 }
 
 void read_from_ready_clients(Server *s)
 {
     uchar buff[BUFLEN];
     int rb = 0;
+    short int revents = 0;
 
-    for(int i = 1; i < s->ctlen; i++)
+    for(int ctidx = 1; ctidx < s->ctlen; ctidx++)
     {
-        if((s->ctab[i].revents & POLLIN))
+        revents = s->ctab[ctidx].revents;
+        if(revents & (POLLERR | POLLHUP | POLLNVAL))
+            close_connection(s, ctidx);
+        else if(revents & POLLIN)
         {
-            buffer_reset(s->inbufs[i]);
-            while((rb = recv(s->ctab[i].fd, buff, BUFLEN, MSG_DONTWAIT)) > 0)
-                buffer_append(s->inbufs[i], buff, rb);
+            buffer_reset(s->inbufs[ctidx]);
+            if((rb = recv(s->ctab[ctidx].fd, buff, BUFLEN, MSG_DONTWAIT)) > 0)
+                buffer_append(s->inbufs[ctidx], buff, rb);
+            else
+                close_connection(s, ctidx);
+            s->ctab[ctidx].revents = 0;
         }
     }
 }
@@ -74,34 +99,37 @@ void write_to_ready_clients(Server *s)
 {
     uchar buff[BUFLEN];
     int rb;
-    for(int i = 1; i < s->ctlen; i++)
+    for(int ctidx = 1; ctidx < s->ctlen; ctidx++)
     {
         if(
-            (s->ctab[i].revents & POLLOUT) && (s->outbufs[i]) &&
-            (buffer_datasize(s->outbufs[i]) > 0)
+            (s->ctab[ctidx].revents & POLLOUT) &&
+            (buffer_datasize(s->outbufs[ctidx]) > 0)
         )
         {
-            buffer_seek(s->outbufs[i], 0, Start_P);
-            while((rb = buffer_read(s->outbufs[i], buff, BUFLEN)) > 0)
-                send(s->ctab[i].fd, buff, rb, MSG_DONTWAIT);
-            buffer_destroy(s->outbufs[i]);
-            s->outbufs[i] = NULL;
+            buffer_seek(s->outbufs[ctidx], 0, Start_P);
+            while((rb = buffer_read(s->outbufs[ctidx], buff, BUFLEN)) > 0)
+                send(s->ctab[ctidx].fd, buff, rb, MSG_DONTWAIT);
+            buffer_destroy(s->outbufs[ctidx]);
+            s->outbufs[ctidx] = NULL;
         }
     }
 }
 
-int process_request(Server *s)
+void process_request(Server *s)
 {
+    uchar buf[2048] = {0};
     Request *req;
     Response *resp;
 
-    for(int i = 1; i < s->ctlen; i++)
+    for(int ctidx = 1; ctidx < s->ctlen; ctidx++)
     {
-        if(buffer_datasize(s->inbufs[i]) > 0)
+        if(buffer_datasize(s->inbufs[ctidx]) > 0)
         {
-            req = parse_request(s->inbufs[i]);
+            buffer_seek(s->inbufs[ctidx], 0, Start_P);
+            req = parse_request(s->inbufs[ctidx]);
             resp = handle_request(req);
-            s->outbufs[i] = serialize_response(resp);
+            s->outbufs[ctidx] = serialize_response(resp);
+            buffer_reset(s->inbufs[ctidx]);
         }
     }
 }
@@ -175,20 +203,17 @@ int server_run(Server *s)
     if(!s)
         return -1;
 
-    int ready;
     while (1)
     {
-        ready = poll(s->ctab, s->ctlen, POLL_TIMEOUT);
-        if(ready > 0)
+        if(poll(s->ctab, s->ctlen, POLL_TIMEOUT) > 0)
         {
-            if(s->ctab[SERVER_CTAB_IDX].revents == POLLIN)
+            if(s->ctab[SERVER_CTAB_IDX].revents & POLLIN)
                 accept_connection(s);
-            else
-            {
-                read_from_ready_clients(s);
-                process_request(s);
-                write_to_ready_clients(s);
-            }    
+            
+            read_from_ready_clients(s);
+            process_request(s);
+            write_to_ready_clients(s);
+               
         }
     }
     return 0;
