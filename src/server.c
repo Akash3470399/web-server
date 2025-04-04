@@ -45,7 +45,7 @@ RetState accept_connection(Server *s)
     s->ctab[s->ctlen] = client;
     s->inbufs[s->ctlen] = buffer_new(0);
 
-    if((s->inbufs[s->ctlen] == NULL) || (s->outbufs[s->ctlen] == NULL))
+    if(s->inbufs[s->ctlen] == NULL)
     {
         close(client.fd);
         return ERR_S;
@@ -144,19 +144,29 @@ Server *server_init(char *addr, int port)
     }
     printf("Server started at %s:%d\n", addr, port);
 
+    // Initilize server info and  input, output buffers for connections
     if (
-        ((s = (Server *)malloc(sizeof(Server))) == NULL) &&
-        ((s->inbufs = (Buffer **)calloc(INIT_CTAB_LEN, sizeof(Buffer *))) == NULL) &&
-        ((s->outbufs = (Buffer **)calloc(INIT_CTAB_LEN, sizeof(Buffer *))) == NULL)
+        ((s = (Server *)calloc(1, sizeof(Server))) == NULL) ||
+        ((s->inbufs = (Buffer **)calloc(CTAB_LEN, sizeof(Buffer *))) == NULL) ||
+        ((s->outbufs = (Buffer **)calloc(CTAB_LEN, sizeof(Buffer *))) == NULL)
     )
-    {
+    {   
+        if(s)
+        {
+            free(s->inbufs);
+            free(s->outbufs);
+        }
+        free(s);
         close(sock);
         return NULL;
     }
 
-    s->ctab[s->ctlen].fd = sock;
-    s->ctab[s->ctlen].events = POLLIN;
-    s->ctab[s->ctlen++].revents = 0;
+    // server is ready to accept connections
+    s->ctab[SERVER_CTAB_IDX].fd = sock;
+    s->ctab[SERVER_CTAB_IDX].events = POLLIN;
+    s->ctab[SERVER_CTAB_IDX].revents = 0;
+    s->ctlen = 1;
+
     return s;
 }
 
